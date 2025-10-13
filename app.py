@@ -3,6 +3,8 @@ import boto3
 import time
 import uuid
 import requests
+import pandas as pd
+from io import BytesIO
 
 st.title("Amazon Connect Voice Analysis")
 
@@ -19,8 +21,40 @@ tab1, tab2 = st.tabs(["Transcribe", "Manage Files"])
 with tab1:
     language = st.selectbox("Transcribe Language", ["es-US", "en-US"], format_func=lambda x: "English" if x == "en-US" else "Spanish")
     translate_lang = st.selectbox("Translate To", ["None", "en", "es", "fr", "de", "zh", "ja"], format_func=lambda x: {"None": "None", "en": "English", "es": "Spanish", "fr": "French", "de": "German", "zh": "Chinese", "ja": "Japanese"}[x])
+    
+    if 'results' not in st.session_state:
+        st.session_state.results = []
+    if 'show_results' not in st.session_state:
+        st.session_state.show_results = False
+    
+    col1, col2, col3 = st.columns([2, 3, 7])
+    transcribe_clicked = col1.button("Transcribe")
+    
+    if st.session_state.results:
+        df = pd.DataFrame(st.session_state.results)
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Transcriptions')
+        col2.download_button(
+            label="Export to Excel",
+            data=buffer.getvalue(),
+            file_name="transcription_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        col2.button("Export to Excel", disabled=True)
 
-if tab1 and st.button("Transcribe"):
+    if st.session_state.show_results and st.session_state.results:
+        for result in st.session_state.results:
+            st.subheader(result['File'])
+            audio_url = s3.generate_presigned_url('get_object', Params={'Bucket': BUCKET_NAME, 'Key': result['File']}, ExpiresIn=3600)
+            st.audio(audio_url)
+            st.text_area("Transcript", result['Transcript'], height=150, key=f"{result['File']}_display_transcript")
+            if result['Translation']:
+                st.text_area("Translation", result['Translation'], height=150, key=f"{result['File']}_display_translation")
+            st.divider()
+
+if tab1 and transcribe_clicked:
     if not BUCKET_NAME:
         st.error("Please enter a valid S3 bucket name")
         st.stop()
@@ -33,6 +67,8 @@ if tab1 and st.button("Transcribe"):
     if not wav_files:
         st.warning("No WAV files found in bucket")
     else:
+        st.session_state.results = []
+        st.session_state.show_results = False
         for s3_key in wav_files:
             st.subheader(s3_key)
             
@@ -61,7 +97,8 @@ if tab1 and st.button("Transcribe"):
                     transcript_text = transcript_data['results']['transcripts'][0]['transcript']
                     st.text_area("Transcript", transcript_text, height=150, key=f"{s3_key}_transcript")
                     
-                    if translate_lang != "None":
+                    translation_text = ""
+                    if translate_lang != "None" and transcript_text.strip():
                         source_lang = language.split('-')[0]
                         if source_lang != translate_lang:
                             with st.spinner("Translating..."):
@@ -70,13 +107,23 @@ if tab1 and st.button("Transcribe"):
                                     SourceLanguageCode=source_lang,
                                     TargetLanguageCode=translate_lang
                                 )
-                                st.text_area("Translation", translation['TranslatedText'], height=150, key=f"{s3_key}_translation")
+                                translation_text = translation['TranslatedText']
+                                st.text_area("Translation", translation_text, height=150, key=f"{s3_key}_translation")
+                    
+                    st.session_state.results.append({
+                        'File': s3_key,
+                        'Transcript': transcript_text,
+                        'Translation': translation_text
+                    })
                 else:
                     st.error(f"Failed: {s3_key}")
                 
                 transcribe.delete_transcription_job(TranscriptionJobName=job_name)
             
             st.divider()
+        
+        st.session_state.show_results = True
+        st.rerun()
 
 with tab2:
     if not BUCKET_NAME:
