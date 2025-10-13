@@ -10,7 +10,9 @@ s3 = boto3.client('s3')
 transcribe = boto3.client('transcribe')
 translate = boto3.client('translate')
 
-BUCKET_NAME = st.text_input("S3 Bucket Name", value="amdtest0930")
+s3_path = st.text_input("S3 Path (bucket/prefix)", value="amdtest0930/silence").strip()
+BUCKET_NAME = s3_path.split('/')[0]
+PREFIX = '/'.join(s3_path.split('/')[1:]) if '/' in s3_path else ''
 
 tab1, tab2 = st.tabs(["Transcribe", "Manage Files"])
 
@@ -19,7 +21,13 @@ with tab1:
     translate_lang = st.selectbox("Translate To", ["None", "en", "es", "fr", "de", "zh", "ja"], format_func=lambda x: {"None": "None", "en": "English", "es": "Spanish", "fr": "French", "de": "German", "zh": "Chinese", "ja": "Japanese"}[x])
 
 if tab1 and st.button("Transcribe"):
-    response = s3.list_objects_v2(Bucket=BUCKET_NAME)
+    if not BUCKET_NAME:
+        st.error("Please enter a valid S3 bucket name")
+        st.stop()
+    params = {'Bucket': BUCKET_NAME}
+    if PREFIX:
+        params['Prefix'] = PREFIX
+    response = s3.list_objects_v2(**params)
     wav_files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.wav')]
     
     if not wav_files:
@@ -71,15 +79,23 @@ if tab1 and st.button("Transcribe"):
             st.divider()
 
 with tab2:
+    if not BUCKET_NAME:
+        st.warning("Please enter a valid S3 bucket name")
+        st.stop()
+    
     st.subheader("Upload WAV File")
     uploaded_file = st.file_uploader("Choose a WAV file", type=['wav'])
     if uploaded_file and st.button("Upload"):
-        s3.upload_fileobj(uploaded_file, BUCKET_NAME, uploaded_file.name)
-        st.success(f"Uploaded {uploaded_file.name}")
+        s3_key = f"{PREFIX}/{uploaded_file.name}" if PREFIX else uploaded_file.name
+        s3.upload_fileobj(uploaded_file, BUCKET_NAME, s3_key)
+        st.success(f"Uploaded {s3_key}")
         st.rerun()
     
     st.subheader("WAV Files in Bucket")
-    response = s3.list_objects_v2(Bucket=BUCKET_NAME)
+    params = {'Bucket': BUCKET_NAME}
+    if PREFIX:
+        params['Prefix'] = PREFIX
+    response = s3.list_objects_v2(**params)
     wav_files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.wav')]
     
     if wav_files:
